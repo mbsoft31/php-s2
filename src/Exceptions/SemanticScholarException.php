@@ -1,136 +1,70 @@
 <?php
+// src/Exceptions/SemanticScholarException.php
 
 namespace Mbsoft\SemanticScholar\Exceptions;
 
 use Exception;
+use Psr\Http\Message\ResponseInterface;
 
 class SemanticScholarException extends Exception
 {
-    /**
-     * Create a new exception instance.
-     */
-    public function __construct(
-        string $message = '',
-        int $code = 0,
-        ?Exception $previous = null
-    ) {
-        parent::__construct($message, $code, $previous);
+    protected $response;
+    protected $errorCode;
+
+    public function __construct(string $message, int $code = 0, ResponseInterface $response = null)
+    {
+        parent::__construct($message, $code);
+        $this->response = $response;
+        $this->errorCode = $code;
     }
 
-    /**
-     * Create an exception for rate limit errors.
-     */
-    public static function rateLimitExceeded(int $retryAfter = null): self
+    public static function rateLimitExceeded(): self
     {
-        $message = 'Rate limit exceeded.';
-        if ($retryAfter) {
-            $message .= " Retry after {$retryAfter} seconds.";
-        }
-
-        return new self($message, 429);
+        return new self('Rate limit exceeded. Consider using an API key for higher limits.', 429);
     }
 
-    /**
-     * Create an exception for authentication errors.
-     */
-    public static function unauthorized(string $message = 'Authentication failed'): self
+    public static function unauthorized(): self
     {
-        return new self($message, 401);
+        return new self('Unauthorized. Please check your API key.', 401);
     }
 
-    /**
-     * Create an exception for not found errors.
-     */
-    public static function notFound(string $resource = 'Resource'): self
+    public static function notFound(string $identifier): self
     {
-        return new self("{$resource} not found.", 404);
+        return new self("Resource not found: {$identifier}", 404);
     }
 
-    /**
-     * Create an exception for bad requests.
-     */
-    public static function badRequest(string $message = 'Bad request'): self
+    public static function invalidRequest(string $details): self
     {
-        return new self($message, 400);
+        return new self("Invalid request: {$details}", 400);
     }
 
-    /**
-     * Create an exception for server errors.
-     */
-    public static function serverError(string $message = 'Internal server error'): self
+    public static function networkError(string $details): self
     {
-        return new self($message, 500);
+        return new self("Network error: {$details}", 0);
     }
 
-    /**
-     * Create an exception for network/connection errors.
-     */
-    public static function connectionError(string $message = 'Connection failed'): self
+    public function getResponse(): ?ResponseInterface
     {
-        return new self($message, 0);
+        return $this->response;
     }
 
-    /**
-     * Create an exception for timeout errors.
-     */
-    public static function timeout(string $message = 'Request timeout'): self
+    public function getErrorCode(): int
     {
-        return new self($message, 408);
+        return $this->errorCode;
     }
 
-    /**
-     * Create an exception for validation errors.
-     */
-    public static function validation(string $message = 'Validation failed'): self
+    public function isRateLimit(): bool
     {
-        return new self($message, 422);
+        return $this->errorCode === 429;
     }
 
-    /**
-     * Check if this is a rate limit error.
-     */
-    public function isRateLimitError(): bool
+    public function isUnauthorized(): bool
     {
-        return $this->getCode() === 429;
+        return $this->errorCode === 401;
     }
 
-    /**
-     * Check if this is an authentication error.
-     */
-    public function isAuthenticationError(): bool
+    public function isNotFound(): bool
     {
-        return $this->getCode() === 401;
-    }
-
-    /**
-     * Check if this is a not found error.
-     */
-    public function isNotFoundError(): bool
-    {
-        return $this->getCode() === 404;
-    }
-
-    /**
-     * Check if this is a client error (4xx).
-     */
-    public function isClientError(): bool
-    {
-        return $this->getCode() >= 400 && $this->getCode() < 500;
-    }
-
-    /**
-     * Check if this is a server error (5xx).
-     */
-    public function isServerError(): bool
-    {
-        return $this->getCode() >= 500 && $this->getCode() < 600;
-    }
-
-    /**
-     * Check if this error is retryable.
-     */
-    public function isRetryable(): bool
-    {
-        return in_array($this->getCode(), [429, 500, 502, 503, 504]);
+        return $this->errorCode === 404;
     }
 }

@@ -1,74 +1,83 @@
 <?php
+// src/SemanticScholarServiceProvider.php (Enhanced)
 
 namespace Mbsoft\SemanticScholar;
 
-use Spatie\LaravelPackageTools\Package;
-use Spatie\LaravelPackageTools\PackageServiceProvider;
+use Illuminate\Support\ServiceProvider;
+use Illuminate\Support\Facades\Route;
+use Mbsoft\SemanticScholar\Commands\SemanticScholarCommand;
+use Mbsoft\SemanticScholar\Http\Client;
 
-class SemanticScholarServiceProvider extends PackageServiceProvider
+class SemanticScholarServiceProvider extends ServiceProvider
 {
-    /**
-     * Configure the package.
-     */
-    public function configurePackage(Package $package): void
-    {
-        /*
-         * This class is a Package Service Provider
-         *
-         * More info: https://github.com/spatie/laravel-package-tools
-         */
-        $package
-            ->name('laravel-semantic-scholar')
-            ->hasConfigFile('semantic-scholar');
-    }
-
-    /**
-     * Register package services.
-     */
     public function register(): void
     {
-        parent::register();
+        $this->mergeConfigFrom(__DIR__.'/../config/semantic-scholar.php', 'semantic-scholar');
 
-        $this->mergeConfigFrom(
-            __DIR__.'/../config/semantic-scholar.php',
-            'semantic-scholar'
-        );
-
-        $this->app->bind('semantic-scholar', function () {
-            return new SemanticScholar();
+        $this->app->singleton('semantic-scholar', function ($app) {
+            return new SemanticScholar($app->make(Client::class));
         });
 
-        $this->app->singleton(SemanticScholar::class, function () {
-            return new SemanticScholar();
+        $this->app->singleton(Client::class, function ($app) {
+            return new Client($app['config']['semantic-scholar']);
         });
     }
 
-    /**
-     * Bootstrap package services.
-     */
     public function boot(): void
     {
-        parent::boot();
+        // Publish config
+        $this->publishes([
+            __DIR__.'/../config/semantic-scholar.php' => config_path('semantic-scholar.php'),
+        ], 'semantic-scholar-config');
 
+        // Register commands
         if ($this->app->runningInConsole()) {
-            $this->publishes([
-                __DIR__.'/../config/semantic-scholar.php' => config_path('semantic-scholar.php'),
-            ], 'semantic-scholar-config');
-
-            $this->publishes([
-                __DIR__.'/../config/semantic-scholar.php' => config_path('semantic-scholar.php'),
-            ], 'config');
+            $this->commands([
+                SemanticScholarCommand::class,
+            ]);
         }
+
+        // Register health check routes in development
+        if ($this->app->environment(['local', 'testing'])) {
+            $this->registerHealthRoutes();
+        }
+
+        // Register cache tags for cache management
+        $this->registerCacheTags();
     }
 
-    /**
-     * Get the services provided by the provider.
-     */
-    public function provides(): array
+    protected function registerHealthRoutes(): void
     {
-        return [
-            'semantic-scholar',
-            SemanticScholar::class,
-        ];
+        Route::prefix('semantic-scholar')
+            ->group(function () {
+                Route::get('health', function () {
+                    try {
+                        $paper = app('semantic-scholar')->papers()
+                            ->findByDoi('10.1093/mind/lix.236.433');
+
+                        return response()->json([
+                            'status' => 'healthy',
+                            'test_paper' => $paper ? $paper->getTitle() : null,
+                            'timestamp' => now(),
+                        ]);
+                    } catch (\Exception $e) {
+                        return response()->json([
+                            'status' => 'unhealthy',
+                            'error' => $e->getMessage(),
+                            'timestamp' => now(),
+                        ], 500);
+                    }
+                });
+            });
+    }
+
+    protected function registerCacheTags(): void
+    {
+        // Register cache tags for organized cache management
+        $this->app->booted(function () {
+            if (config('semantic-scholar.cache.tags')) {
+                cache()->tags(['semantic-scholar']);
+            }
+        });
     }
 }
