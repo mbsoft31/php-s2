@@ -23,6 +23,7 @@ class Client
 
     /**
      * Make a GET request to the Semantic Scholar API.
+     * @throws SemanticScholarException
      */
     public function get(string $url, array $params = []): array
     {
@@ -31,6 +32,7 @@ class Client
 
     /**
      * Make a POST request to the Semantic Scholar API.
+     * @throws SemanticScholarException
      */
     public function post(string $url, array $data = []): array
     {
@@ -39,6 +41,7 @@ class Client
 
     /**
      * Make a request with comprehensive error handling and retry logic.
+     * @throws SemanticScholarException
      */
     private function makeRequest(string $method, string $url, array $data = []): array
     {
@@ -60,7 +63,7 @@ class Client
             } catch (ConnectionException $e) {
                 $attempts++;
                 if ($attempts >= $maxAttempts) {
-                    throw SemanticScholarException::connectionError("Connection failed after {$maxAttempts} attempts: {$e->getMessage()}");
+                    throw SemanticScholarException::connectionError("Connection failed after $maxAttempts attempts: {$e->getMessage()}");
                 }
                 $this->sleep($delay * $attempts);
             } catch (SemanticScholarException $e) {
@@ -77,10 +80,12 @@ class Client
 
     /**
      * Handle the HTTP response and extract data.
+     * @throws SemanticScholarException
      */
     private function handleResponse(Response $response): array
     {
         if ($response->status() === 404) {
+
             throw SemanticScholarException::notFound();
         }
 
@@ -89,8 +94,8 @@ class Client
         }
 
         if ($response->status() === 429) {
-            $retryAfter = $response->header('Retry-After');
-            throw SemanticScholarException::rateLimitExceeded($retryAfter);
+            // $retryAfter = $response->header('Retry-After');
+            throw SemanticScholarException::rateLimitExceeded();
         }
 
         if ($response->status() === 400) {
@@ -213,55 +218,15 @@ class Client
         ]);
     }
 
-    /**
-     * Get rate limiter stats.
-     */
-    public function getRateLimiterStats(): array
+    public function timeout(mixed $timeout): static
     {
-        return $this->rateLimiter->getStats();
+        $this->config['timeout'] = $timeout;
+        return $this;
     }
 
-    /**
-     * Clear rate limits.
-     */
-    public function clearRateLimits(): void
+    public function retry(mixed $retryAttempts): static
     {
-        $this->rateLimiter->clear();
-    }
-
-    /**
-     * Check if API key is configured.
-     */
-    public function hasApiKey(): bool
-    {
-        return !empty($this->config['api_key']);
-    }
-
-    /**
-     * Get API health status.
-     */
-    public function getHealthStatus(): array
-    {
-        try {
-            // Make a simple request to check API health
-            $response = $this->get(config('semantic-scholar.base_url') . '/paper/search', [
-                'query' => 'test',
-                'limit' => 1,
-            ]);
-
-            return [
-                'status' => 'healthy',
-                'api_key_configured' => $this->hasApiKey(),
-                'rate_limit_stats' => $this->getRateLimiterStats(),
-                'timestamp' => now()->toISOString(),
-            ];
-        } catch (\Exception $e) {
-            return [
-                'status' => 'unhealthy',
-                'error' => $e->getMessage(),
-                'api_key_configured' => $this->hasApiKey(),
-                'timestamp' => now()->toISOString(),
-            ];
-        }
+        $this->config['retry']['attempts'] = $retryAttempts;
+        return $this;
     }
 }

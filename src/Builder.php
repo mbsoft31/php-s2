@@ -4,17 +4,18 @@ namespace Mbsoft\SemanticScholar;
 
 use BadMethodCallException;
 use DateInterval;
-use Illuminate\Cache\Repository;
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\PendingRequest;
+use Exception;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache as CacheFacade;
-use Illuminate\Support\Facades\Http;
 use Illuminate\Support\LazyCollection;
 use Illuminate\Support\Str;
+use Mbsoft\SemanticScholar\DTOs\Author;
+use Mbsoft\SemanticScholar\DTOs\Paper;
+use Mbsoft\SemanticScholar\DTOs\Venue;
 use Mbsoft\SemanticScholar\Exceptions\SemanticScholarException;
+use Mbsoft\SemanticScholar\Http\Client;
 
 class Builder
 {
@@ -36,9 +37,20 @@ class Builder
 
     private bool $cacheForever = false;
 
-    public function __construct(private string $entity)
+    protected Client $client;
+    protected array $params = [];
+    protected array $headers = [];
+    protected ?string $endpoint = null;
+    protected ?int $cacheFor = null;
+    protected int $retryAttempts = 3;
+    protected int $timeout = 30;
+
+
+    public function __construct(Client $client)
     {
-        $this->apiKey = config('semantic-scholar.api_key');
+        $this->client = $client;
+        $this->timeout = config('semantic-scholar.timeout', 30);
+        $this->retryAttempts = config('semantic-scholar.retry_attempts', 3);
     }
 
     /**
@@ -57,16 +69,6 @@ class Builder
     public function fields(array|string $fields): self
     {
         $this->fields = is_array($fields) ? $fields : func_get_args();
-
-        return $this;
-    }
-
-    /**
-     * Add a filter condition.
-     */
-    public function where(string $field, string $value): self
-    {
-        $this->filters[$field] = $value;
 
         return $this;
     }
@@ -92,40 +94,268 @@ class Builder
     }
 
     /**
-     * Find a single entity by ID.
-     */
-    public function find(string $id): ?object
-    {
-        $url = $this->buildUrl($id);
-        $params = $this->buildQueryParams();
-        $cacheKey = $this->getCacheKey($url, $params);
-
-        return $this->executeCacheable($cacheKey, function () use ($url, $params) {
-            $response = $this->makeRequest($url, $params);
-
-            return $response ? $this->mapToDto($response) : null;
-        });
-    }
-
-    /**
-     * Get a collection of results.
+     * Execute the query and get results
+     * @throws SemanticScholarException
      */
     public function get(): Collection
     {
-        $url = $this->buildUrl();
-        $params = $this->buildQueryParams();
-        $cacheKey = $this->getCacheKey($url, $params);
+        try {
+            $response = $this->makeRequest();
 
-        return $this->executeCacheable($cacheKey, function () use ($url, $params) {
-            $response = $this->makeRequest($url, $params);
-            $results = $response['data'] ?? [];
+            return $this->parseResponse($response);
 
-            return collect($results)->map(fn ($item) => $this->mapToDto($item));
-        });
+        } catch (\Exception $e) {
+            throw SemanticScholarException::networkError($e->getMessage());
+        }
     }
 
     /**
+     * Get first result
+     * @throws SemanticScholarException
+     */
+    public function first(): ?object
+    {
+        $this->limit(1);
+        $results = $this->get();
+
+        return $results->first();
+    }
+
+    /**
+     * Find by specific ID (Paper, Author, etc.)
+     * @throws Exception
+     */
+    public function find(string $id): ?object
+    {
+        $this->endpoint = $this->endpoint . '/' . $id;
+
+        try {
+            $response = $this->makeRequest();
+
+            if (empty($response)) {
+                return null;
+            }
+
+            return $this->mapSingleItem($response);
+
+        } catch (\Exception $e) {
+            if (str_contains($e->getMessage(), '404')) {
+                return null;
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Make HTTP request through production Client
+     * @throws SemanticScholarException
+     */
+    protected function makeRequest(): array
+    {
+        $url = $this->buildUrl();
+        $params = $this->buildQueryParams();
+
+        return $this->client
+            ->timeout($this->timeout)
+            ->retry($this->retryAttempts)
+            ->get($url, $params);
+    }
+
+    /**
+     * Parse API response and map to DTOs
+     */
+    protected function parseResponse(array $response): Collection
+    {
+        $items = [];
+
+        // Handle different response formats
+        if (isset($response['data'])) {
+            // Search results format
+            $rawItems = $response['data'];
+        } elseif (isset($response['results'])) {
+            // Alternative results format
+            $rawItems = $response['results'];
+        } elseif (isset($response[0])) {
+            // Direct array of items
+            $rawItems = $response;
+        } else {
+            // Single item
+            return collect([$this->mapSingleItem($response)]);
+        }
+
+        foreach ($rawItems as $item) {
+            $mappedItem = $this->mapSingleItem($item);
+            if ($mappedItem) {
+                $items[] = $mappedItem;
+            }
+        }
+
+        return collect($items);
+    }
+
+    /**
+     * Map single API response item to appropriate DTO
+     */
+    protected function mapSingleItem(array $item): ?object
+    {
+        // Determine entity type and map to appropriate DTO
+        if ($this->isPaperResponse($item)) {
+            return Paper::from($item);
+        } elseif ($this->isAuthorResponse($item)) {
+            return Author::from($item);
+        } elseif ($this->isVenueResponse($item)) {
+            return Venue::from($item);
+        }
+
+        // Fallback for unknown response types
+        return (object) $item;
+    }
+
+    /**
+     * Detect if response is a Paper
+     */
+    protected function isPaperResponse(array $item): bool
+    {
+        return isset($item['paperId']) ||
+            isset($item['title']) ||
+            str_contains($this->endpoint, 'paper');
+    }
+
+    /**
+     * Detect if response is an Author
+     */
+    protected function isAuthorResponse(array $item): bool
+    {
+        return isset($item['authorId']) ||
+            (isset($item['name']) && !isset($item['paperId'])) ||
+            str_contains($this->endpoint, 'author');
+    }
+
+    /**
+     * Detect if response is a Venue
+     */
+    protected function isVenueResponse(array $item): bool
+    {
+        return isset($item['venueId']) ||
+            str_contains($this->endpoint, 'venue');
+    }
+
+    /**
+     * Build the API URL for the request.
+     */
+    private function buildUrl(?string $id = null): string
+    {
+        $baseUrl = config('semantic-scholar.base_url', 'https://api.semanticscholar.org/graph/v1');
+
+        if (!is_null($id)) {
+            return "$baseUrl/$this->endpoint/$id";
+        }
+
+        // Handle different endpoint patterns
+        return match ($this->endpoint) {
+            'papers' => $this->searchQuery ? " $baseUrl/paper/search" : "$baseUrl/paper/batch",
+            'authors' => "$baseUrl/author/batch",
+            'venues' => "$baseUrl/venue/batch",
+            'recommendations' => "$baseUrl/recommendations/v1/papers",
+            default => "$baseUrl/$this->endpoint",
+        };
+    }
+
+    /**
+     * Build query parameters for the request.
+     */
+    private function buildQueryParams(): array
+    {
+        $params = [];
+
+        if ($this->searchQuery) {
+            $params['query'] = $this->searchQuery;
+        }
+
+        if (!empty($this->fields)) {
+            $params['fields'] = implode(',', $this->fields);
+        } elseif ($defaultFields = config("semantic-scholar.default_fields.$this->entity")) {
+            $params['fields'] = implode(',', $defaultFields);
+        }
+
+        if ($this->limit) {
+            $params['limit'] = $this->limit;
+        }
+
+        if ($this->offset) {
+            $params['offset'] = $this->offset;
+        }
+
+        if ($this->token) {
+            $params['token'] = $this->token;
+        }
+
+        // Add filters
+        foreach ($this->filters as $key => $value) {
+            $params[$key] = $value;
+        }
+
+        return array_filter($params);
+    }
+
+    /**
+     * Generate a cache key for the request.
+     */
+    private function getCacheKey(string $url, array $params = []): string
+    {
+        $key = $url . '?' . http_build_query($params);
+
+        return config('semantic-scholar.cache.prefix', 'semantic_scholar') . '_' . md5($key);
+    }
+
+    /**
+     * Execute a callback with caching if enabled.
+     */
+    private function executeCacheable(string $cacheKey, callable $callback): mixed
+    {
+        if ($this->cacheTtl === null && !$this->cacheForever) {
+            return $callback();
+        }
+
+        $cache = $this->cache();
+
+        if ($this->cacheForever) {
+            return $cache->rememberForever($cacheKey, $callback);
+        }
+
+        return $cache->remember($cacheKey, $this->cacheTtl, $callback);
+    }
+
+    /**
+     * Get the cache repository instance.
+     */
+    protected function cache(): \Illuminate\Contracts\Cache\Repository
+    {
+        $store = config('semantic-scholar.cache.store', 'default');
+
+        return CacheFacade::store($store === 'default' ? null : $store);
+    }
+
+
+    /**
+     * Map API response data to DTO.
+     */
+    private function mapToDto(array $data): object
+    {
+        $dtoClass = 'Mbsoft\\SemanticScholar\\DTOs\\' . ucfirst(rtrim($this->entity, 's'));
+
+        if (class_exists($dtoClass)) {
+            return $dtoClass::from($data);
+        }
+
+        return (object)$data;
+    }
+
+    // Semantic Scholar specific methods
+
+    /**
      * Get paginated results.
+     * @throws SemanticScholarException
      */
     public function paginate(int $perPage = 25, int $page = 1): LengthAwarePaginator
     {
@@ -136,9 +366,9 @@ class Builder
         ]);
 
         $url = $this->buildUrl();
-        $response = $this->makeRequest($url, $params);
+        $response = $this->makeRequest();
 
-        $items = collect($response['data'] ?? [])->map(fn ($item) => $this->mapToDto($item));
+        $items = collect($response['data'] ?? [])->map(fn($item) => $this->mapToDto($item));
         $total = $response['total'] ?? 0;
 
         return new LengthAwarePaginator(
@@ -170,7 +400,7 @@ class Builder
                     $params['offset'] = $currentOffset;
                 }
 
-                $response = $this->makeRequest($this->buildUrl(), $params);
+                $response = $this->makeRequest();
                 $results = $response['data'] ?? [];
 
                 foreach ($results as $result) {
@@ -180,65 +410,26 @@ class Builder
                 // Handle pagination - Semantic Scholar uses 'next' token
                 $currentToken = $response['next'] ?? null;
                 $currentOffset += $limit;
-            } while (! empty($results) && ($currentToken || count($results) === $limit));
+            } while (!empty($results) && ($currentToken || count($results) === $limit));
         });
     }
-
-    /**
-     * Cache results for the specified duration.
-     */
-    public function cacheFor(DateInterval|int $ttl): self
-    {
-        $this->cacheTtl = is_int($ttl) ? now()->addSeconds($ttl) : $ttl;
-
-        return $this;
-    }
-
-    /**
-     * Cache results forever.
-     */
-    public function cacheForever(): self
-    {
-        $this->cacheForever = true;
-
-        return $this;
-    }
-
-    /**
-     * Disable caching for this query.
-     */
-    public function disableCache(): self
-    {
-        $this->cacheTtl = null;
-        $this->cacheForever = false;
-
-        return $this;
-    }
-
-    // Semantic Scholar specific methods
 
     /**
      * Filter papers by publication year.
      */
     public function byYear(int $year): self
     {
-        return $this->where('year', (string) $year);
+        return $this->where('year', (string)$year);
     }
 
     /**
-     * Filter papers by year range.
+     * Add a filter condition.
      */
-    public function byYearRange(int $startYear, int $endYear): self
+    public function where(string $field, string $value): self
     {
-        return $this->where('year', "{$startYear}-{$endYear}");
-    }
+        $this->filters[$field] = $value;
 
-    /**
-     * Filter papers by venue.
-     */
-    public function byVenue(string $venue): self
-    {
-        return $this->where('venue', $venue);
+        return $this;
     }
 
     /**
@@ -246,7 +437,7 @@ class Builder
      */
     public function minCitations(int $count): self
     {
-        return $this->where('minCitationCount', (string) $count);
+        return $this->where('minCitationCount', (string)$count);
     }
 
     /**
@@ -266,21 +457,12 @@ class Builder
     }
 
     /**
-     * Filter papers by publication type.
-     */
-    public function publicationType(string $type): self
-    {
-        return $this->where('publicationTypes', $type);
-    }
-
-    // Semantic Scholar specific find methods
-
-    /**
      * Find a paper by DOI.
+     * @throws Exception
      */
     public function findByDoi(string $doi): ?object
     {
-        if ($this->entity !== 'papers') {
+        if ($this->endpoint !== 'papers') {
             throw new SemanticScholarException('DOI lookup is only available for papers');
         }
 
@@ -292,10 +474,12 @@ class Builder
 
     /**
      * Find a paper by ArXiv ID.
+     * @throws SemanticScholarException
+     * @throws Exception
      */
     public function findByArxiv(string $arxivId): ?object
     {
-        if ($this->entity !== 'papers') {
+        if ($this->endpoint !== 'papers') {
             throw new SemanticScholarException('ArXiv lookup is only available for papers');
         }
 
@@ -306,6 +490,7 @@ class Builder
 
     /**
      * Find a paper by PubMed ID.
+     * @throws Exception
      */
     public function findByPubmed(string $pubmedId): ?object
     {
@@ -313,197 +498,41 @@ class Builder
             throw new SemanticScholarException('PubMed lookup is only available for papers');
         }
 
-        $pubmedId = str_starts_with($pubmedId, 'PMID:') ? $pubmedId : "PMID:{$pubmedId}";
+        $pubmedId = str_starts_with($pubmedId, 'PMID:') ? $pubmedId : "PMID:$pubmedId";
 
         return $this->find($pubmedId);
     }
 
     /**
-     * Find a paper by Corpus ID.
-     */
-    public function findByCorpusId(string $corpusId): ?object
-    {
-        if ($this->entity !== 'papers') {
-            throw new SemanticScholarException('Corpus ID lookup is only available for papers');
-        }
-
-        $corpusId = str_starts_with($corpusId, 'CorpusId:') ? $corpusId : "CorpusId:{$corpusId}";
-
-        return $this->find($corpusId);
-    }
-
-    /**
      * Find an author by ORCID.
+     * @throws Exception
      */
     public function findByOrcid(string $orcid): ?object
     {
-        if ($this->entity !== 'authors') {
+        if ($this->endpoint !== 'authors') {
             throw new SemanticScholarException('ORCID lookup is only available for authors');
         }
 
-        $orcid = str_starts_with($orcid, 'ORCID:') ? $orcid : "ORCID:{$orcid}";
+        $orcid = str_starts_with($orcid, 'ORCID:') ? $orcid : "ORCID:$orcid";
 
         return $this->find($orcid);
     }
 
     /**
-     * Build the API URL for the request.
+     * Dump query information for debugging.
      */
-    private function buildUrl(?string $id = null): string
+    public function dump(): array
     {
-        $baseUrl = config('semantic-scholar.base_url', 'https://api.semanticscholar.org/graph/v1');
-
-        if ($id) {
-            return "{$baseUrl}/{$this->entity}/{$id}";
-        }
-
-        // Handle different endpoint patterns
-        return match ($this->entity) {
-            'papers' => $this->searchQuery ? "{$baseUrl}/paper/search" : "{$baseUrl}/paper/batch",
-            'authors' => "{$baseUrl}/author/batch",
-            'venues' => "{$baseUrl}/venue/batch",
-            'recommendations' => "{$baseUrl}/recommendations/v1/papers",
-            default => "{$baseUrl}/{$this->entity}",
-        };
-    }
-
-    /**
-     * Build query parameters for the request.
-     */
-    private function buildQueryParams(): array
-    {
-        $params = [];
-
-        if ($this->searchQuery) {
-            $params['query'] = $this->searchQuery;
-        }
-
-        if (! empty($this->fields)) {
-            $params['fields'] = implode(',', $this->fields);
-        } elseif ($defaultFields = config("semantic-scholar.default_fields.{$this->entity}")) {
-            $params['fields'] = implode(',', $defaultFields);
-        }
-
-        if ($this->limit) {
-            $params['limit'] = $this->limit;
-        }
-
-        if ($this->offset) {
-            $params['offset'] = $this->offset;
-        }
-
-        if ($this->token) {
-            $params['token'] = $this->token;
-        }
-
-        // Add filters
-        foreach ($this->filters as $key => $value) {
-            $params[$key] = $value;
-        }
-
-        return array_filter($params);
-    }
-
-    /**
-     * Make an HTTP request to the API.
-     */
-    private function makeRequest(string $url, array $params = []): ?array
-    {
-        $headers = [
-            'Accept' => 'application/json',
-            'User-Agent' => config('semantic-scholar.user_agent', 'Laravel-Semantic-Scholar/1.0'),
+        return [
+            'entity' => $this->endpoint,
+            'url' => $this->toUrl(),
+            'params' => $this->buildQueryParams(),
+            'filters' => $this->filters,
+            'search_query' => $this->searchQuery,
+            'fields' => $this->fields,
+            'limit' => $this->limit,
+            'offset' => $this->offset,
         ];
-
-        if ($this->apiKey) {
-            $headers['x-api-key'] = $this->apiKey;
-        }
-
-        try {
-            $response = Http::withHeaders($headers)
-                ->timeout(config('semantic-scholar.timeout', 30))
-                ->retry(
-                    config('semantic-scholar.retry.attempts', 3),
-                    config('semantic-scholar.retry.delay', 100)
-                )
-                ->get($url, $params);
-
-            if ($response->status() === 404) {
-                return null;
-            }
-
-            if ($response->status() === 429) {
-                throw new SemanticScholarException(
-                    'Rate limit exceeded. Please slow down your requests.',
-                    429
-                );
-            }
-
-            if ($response->failed()) {
-                $errorMessage = $response->json('message') ?? 'API request failed';
-                throw new SemanticScholarException($errorMessage, $response->status());
-            }
-
-            return $response->json();
-        } catch (ConnectionException $e) {
-            throw new SemanticScholarException("Connection failed: {$e->getMessage()}");
-        } catch (\Exception $e) {
-            if ($e instanceof SemanticScholarException) {
-                throw $e;
-            }
-            throw new SemanticScholarException("Request failed: {$e->getMessage()}");
-        }
-    }
-
-    /**
-     * Map API response data to DTO.
-     */
-    private function mapToDto(array $data): object
-    {
-        $dtoClass = 'Mbsoft\\SemanticScholar\\DTOs\\'.ucfirst(rtrim($this->entity, 's'));
-
-        if (class_exists($dtoClass)) {
-            return $dtoClass::from($data);
-        }
-
-        return (object) $data;
-    }
-
-    /**
-     * Generate a cache key for the request.
-     */
-    private function getCacheKey(string $url, array $params = []): string
-    {
-        $key = $url.'?'.http_build_query($params);
-
-        return config('semantic-scholar.cache.prefix', 'semantic_scholar').'_'.md5($key);
-    }
-
-    /**
-     * Execute a callback with caching if enabled.
-     */
-    private function executeCacheable(string $cacheKey, callable $callback): mixed
-    {
-        if ($this->cacheTtl === null && ! $this->cacheForever) {
-            return $callback();
-        }
-
-        $cache = $this->cache();
-
-        if ($this->cacheForever) {
-            return $cache->rememberForever($cacheKey, $callback);
-        }
-
-        return $cache->remember($cacheKey, $this->cacheTtl, $callback);
-    }
-
-    /**
-     * Get the cache repository instance.
-     */
-    protected function cache(): Repository
-    {
-        $store = config('semantic-scholar.cache.store', 'default');
-
-        return CacheFacade::store($store === 'default' ? null : $store);
     }
 
     /**
@@ -518,24 +547,7 @@ class Builder
             return $url;
         }
 
-        return $url.'?'.http_build_query($params);
-    }
-
-    /**
-     * Dump query information for debugging.
-     */
-    public function dump(): array
-    {
-        return [
-            'entity' => $this->entity,
-            'url' => $this->toUrl(),
-            'params' => $this->buildQueryParams(),
-            'filters' => $this->filters,
-            'search_query' => $this->searchQuery,
-            'fields' => $this->fields,
-            'limit' => $this->limit,
-            'offset' => $this->offset,
-        ];
+        return $url . '?' . http_build_query($params);
     }
 
     /**
@@ -550,6 +562,7 @@ class Builder
             return $this->where($filterKey, $value);
         }
 
-        throw new BadMethodCallException("Method {$name} does not exist.");
+        throw new BadMethodCallException("Method $name does not exist.");
     }
+
 }

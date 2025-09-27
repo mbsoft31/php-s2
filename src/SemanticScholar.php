@@ -2,72 +2,53 @@
 
 namespace Mbsoft\SemanticScholar;
 
+use Mbsoft\SemanticScholar\Http\Client;
+use Mbsoft\SemanticScholar\Builders\PaperBuilder;
+use Mbsoft\SemanticScholar\Builders\AuthorBuilder;
+
 class SemanticScholar
 {
-    /**
-     * Create a new papers query builder.
-     */
-    public function papers(): Builder
+    protected Client $client;
+
+    public function __construct(Client $client)
     {
-        return new Builder('papers');
+        $this->client = $client;
     }
 
     /**
-     * Create a new authors query builder.
+     * Get papers builder
      */
-    public function authors(): Builder
+    public function papers(): PaperBuilder
     {
-        return new Builder('authors');
+        return app(PaperBuilder::class);
     }
 
     /**
-     * Create a new venues query builder.
+     * Get authors builder
      */
-    public function venues(): Builder
+    public function authors(): AuthorBuilder
     {
-        return new Builder('venues');
+        return app(AuthorBuilder::class);
     }
 
     /**
-     * Create a new recommendations query builder.
+     * Get HTTP client instance
      */
-    public function recommendations(): Builder
+    public function client(): Client
     {
-        return new Builder('recommendations');
+        return $this->client;
     }
 
     /**
-     * Get the current API configuration.
+     * Test API connection
      */
-    public function config(): array
+    public function test(): bool
     {
-        return config('semantic-scholar', []);
-    }
-
-    /**
-     * Get the API base URL.
-     */
-    public function getBaseUrl(): string
-    {
-        return config('semantic-scholar.base_url', 'https://api.semanticscholar.org/graph/v1');
-    }
-
-    /**
-     * Check if API key is configured.
-     */
-    public function hasApiKey(): bool
-    {
-        return ! empty(config('semantic-scholar.api_key'));
-    }
-
-    /**
-     * Get the configured rate limit.
-     */
-    public function getRateLimit(): array
-    {
-        return config('semantic-scholar.rate_limit', [
-            'requests_per_second' => 1,
-            'burst_limit' => 10,
-        ]);
+        try {
+            $paper = $this->papers()->findByDoi('10.1093/mind/lix.236.433');
+            return $paper !== null;
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 }
