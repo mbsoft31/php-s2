@@ -74,7 +74,7 @@ class SemanticScholarServiceProvider extends ServiceProvider
             $this->registerHealthRoutes();
         }
 
-        // Register cache tags for cache management
+        // Register cache tags for cache management - ONLY if tagging is supported
         $this->registerCacheTags();
     }
 
@@ -130,12 +130,38 @@ class SemanticScholarServiceProvider extends ServiceProvider
 
     /**
      * Register cache tags for organized cache management
+     * Only if cache driver supports tagging and tagging is enabled
      */
     protected function registerCacheTags(): void
     {
         $this->app->booted(function () {
-            if (config('semantic-scholar.cache.tags')) {
-                cache()->tags(['semantic-scholar']);
+            // Only attempt to use cache tags if configuration supports it
+            $cacheConfig = config('semantic-scholar.cache', []);
+            $cacheEnabled = $cacheConfig['enabled'] ?? false;
+            $tagsEnabled = $cacheConfig['tags'] ?? false;
+            
+            if (!$cacheEnabled || !$tagsEnabled) {
+                return;
+            }
+
+            try {
+                // Check if the current cache store supports tagging
+                $cacheStore = cache()->getStore();
+                
+                // Only Redis and Memcached drivers support tagging
+                $supportsTagging = method_exists($cacheStore, 'tags') && (
+                    $cacheStore instanceof \Illuminate\Cache\RedisStore ||
+                    $cacheStore instanceof \Illuminate\Cache\MemcachedStore
+                );
+                
+                if ($supportsTagging) {
+                    cache()->tags(['semantic-scholar']);
+                }
+                
+            } catch (Exception $e) {
+                // Silently fail if cache tagging is not supported
+                // This prevents the application from crashing in test environments
+                // where array cache driver is used
             }
         });
     }
