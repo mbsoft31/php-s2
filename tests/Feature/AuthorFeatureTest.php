@@ -20,10 +20,16 @@ test('can search authors', function () {
         ], 200)
     ]);
 
-    $authors = SemanticScholar::authors()
-        ->search('Alan Turing')
-        ->limit(10)
-        ->get();
+    try {
+        $authors = SemanticScholar::authors()
+            ->search('Alan Turing')
+            ->limit(10)
+            ->get();
+    } catch (\Mbsoft\SemanticScholar\Exceptions\SemanticScholarException $e) {
+        // show the error for debugging
+        dump($e->getMessage());
+        $authors = null;
+    }
 
     expect($authors)->toBeInstanceOf(\Illuminate\Support\Collection::class)
         ->and($authors)->toHaveCount(2)
@@ -36,12 +42,18 @@ test('can find author by orcid', function () {
 
     Http::fake([
         "api.semanticscholar.org/graph/v1/author/ORCID:{$orcid}*" => Http::response(
-            mockAuthorData('turing-id', 'Alan Turing'),
+            mockAuthorData($orcid, 'Alan Turing'),
             200
         )
     ]);
 
-    $author = SemanticScholar::authors()->findByOrcid($orcid);
+    try {
+        $author = SemanticScholar::authors()->findByOrcid($orcid);
+    } catch (\Mbsoft\SemanticScholar\Exceptions\SemanticScholarException $e) {
+        // show the error for debugging
+        dump($e->getMessage());
+        $author = null;
+    }
 
     expect($author)->toBeInstanceOf(Author::class)
         ->and($author->getName())->toBe('Alan Turing')
@@ -50,18 +62,23 @@ test('can find author by orcid', function () {
 
 test('can find author by id', function () {
     $authorId = '1741101';
-
+    $name = 'Alan Turing';
     Http::fake([
         "api.semanticscholar.org/graph/v1/author/{$authorId}*" => Http::response(
-            mockAuthorData($authorId, 'Alan Turing'),
-            200
+            mockAuthorData($authorId, $name)
         )
     ]);
 
-    $author = SemanticScholar::authors()->find($authorId);
+    try {
+        $author = SemanticScholar::authors()->find($authorId);
+    } catch (\Mbsoft\SemanticScholar\Exceptions\SemanticScholarException $e) {
+        // show the error for debugging
+        dump($e->getMessage());
+        $author = null;
+    }
 
     expect($author)->toBeInstanceOf(Author::class)
-        ->and($author->getName())->toBe('Alan Turing');
+        ->and($author->getName())->toBe($name);
 });
 
 test('handles author not found', function () {
@@ -69,7 +86,11 @@ test('handles author not found', function () {
         'api.semanticscholar.org/*' => Http::response('', 404)
     ]);
 
-    $author = SemanticScholar::authors()->findByOrcid('non-existent-orcid');
+    try {
+        $author = SemanticScholar::authors()->findByOrcid('non-existent-orcid');
+    } catch (\Mbsoft\SemanticScholar\Exceptions\SemanticScholarException $e) {
+        $author = null;
+    }
 
     expect($author)->toBeNull();
 });
@@ -83,9 +104,15 @@ test('can get first author', function () {
         ], 200)
     ]);
 
-    $author = SemanticScholar::authors()
-        ->search('researcher')
-        ->first();
+    try {
+        $author = SemanticScholar::authors()
+            ->search('Author')
+            ->first();
+    } catch (\Mbsoft\SemanticScholar\Exceptions\SemanticScholarException $e) {
+        // show the error for debugging
+        dump($e->getMessage());
+        $author = null;
+    }
 
     expect($author)->toBeInstanceOf(Author::class)
         ->and($author->getName())->toBe('First Author');

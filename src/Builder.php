@@ -183,9 +183,10 @@ class Builder
      */
     public function find(string $id): ?object
     {
-        $endpoint = rtrim($this->currentEndpoint, '/search') . '/' . $id;
+        $endpoint = $this->currentEndpoint . '/' . $id;
 
         try {
+            dump($endpoint, $this->currentEndpoint);
             $response = $this->client
                 ->timeout($this->timeout)
                 ->retry($this->retryAttempts)
@@ -218,7 +219,7 @@ class Builder
                 ->retry($this->retryAttempts)
                 ->get($endpoint, $this->buildParams(), $this->headers);
 
-            return $response ? new Paper($response) : null;
+            return $response ? Paper::fromArray($response) : null;
 
         } catch (\Exception $e) {
             if (str_contains($e->getMessage(), '404')) {
@@ -241,7 +242,7 @@ class Builder
                 ->retry($this->retryAttempts)
                 ->get($endpoint, $this->buildParams(), $this->headers);
 
-            return $response ? new Paper($response) : null;
+            return $response ? Paper::fromArray($response) : null;
 
         } catch (\Exception $e) {
             if (str_contains($e->getMessage(), '404')) {
@@ -264,7 +265,7 @@ class Builder
                 ->retry($this->retryAttempts)
                 ->get($endpoint, $this->buildParams(), $this->headers);
 
-            return $response ? new Paper($response) : null;
+            return $response ? Paper::fromArray($response) : null;
 
         } catch (\Exception $e) {
             if (str_contains($e->getMessage(), '404')) {
@@ -276,18 +277,20 @@ class Builder
 
     /**
      * Find author by ORCID
+     * @throws SemanticScholarException
      */
     public function findByOrcid(string $orcid): ?object
     {
         $endpoint = 'author/ORCID:' . $orcid;
 
         try {
+            dump($endpoint);
             $response = $this->client
                 ->timeout($this->timeout)
                 ->retry($this->retryAttempts)
                 ->get($endpoint, $this->buildParams(), $this->headers);
 
-            return $response ? new Author($response) : null;
+            return $response ? Author::fromArray($response) : null;
 
         } catch (\Exception $e) {
             if (str_contains($e->getMessage(), '404')) {
@@ -299,6 +302,7 @@ class Builder
 
     /**
      * Execute the query and get results
+     * @throws SemanticScholarException
      */
     public function get(): Collection
     {
@@ -313,6 +317,7 @@ class Builder
 
     /**
      * Get first result
+     * @throws SemanticScholarException
      */
     public function first(): ?object
     {
@@ -384,6 +389,7 @@ class Builder
         $endpoint = $this->currentEndpoint;
         $params = $this->buildParams();
 
+        dump($endpoint);
         return $this->client
             ->timeout($this->timeout)
             ->retry($this->retryAttempts)
@@ -431,11 +437,11 @@ class Builder
     {
         // Determine entity type and map to appropriate DTO
         if ($this->isPaperResponse($item)) {
-            return new Paper($item);
+            return Paper::fromArray($item);
         } elseif ($this->isAuthorResponse($item)) {
-            return new Author($item);
+            return Author::fromArray($item);
         } elseif ($this->isVenueResponse($item)) {
-            return new Venue($item);
+            return Venue::fromArray($item);
         }
 
         // Fallback for unknown response types

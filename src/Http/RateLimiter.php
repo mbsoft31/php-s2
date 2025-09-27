@@ -1,182 +1,53 @@
 <?php
+// src/Http/RateLimiter.php - Complete Fixed Version
 
 namespace Mbsoft\SemanticScholar\Http;
 
 use Illuminate\Support\Facades\Cache;
-use Mbsoft\SemanticScholar\Exceptions\SemanticScholarException;
 
 class RateLimiter
 {
-    private int $requestsPerSecond;
+    protected array $config;
+    protected bool $hasApiKey;
+    protected int $requestsPerSecond;
+    protected int $requestsPerMinute;
 
-    private int $burstLimit;
-
-    private string $cachePrefix;
-
-    public function __construct()
+    public function __construct(array $config, bool $hasApiKey = false)
     {
-        $this->requestsPerSecond = config('semantic-scholar.rate_limit.requests_per_second', 1);
-        $this->burstLimit = config('semantic-scholar.rate_limit.burst_limit', 10);
-        $this->cachePrefix = config('semantic-scholar.cache.prefix', 'semantic_scholar') . '_rate_limit';
+        $this->config = $config;
+        $this->hasApiKey = $hasApiKey;
+        $this->requestsPerSecond = $hasApiKey
+            ? ($config['with_api_key_rps'] ?? 100)
+            : ($config['requests_per_second'] ?? 1);
+        $this->requestsPerMinute = $this->requestsPerSecond * 60;
     }
 
-    /**
-     * Check if request can proceed under rate limits.
-     */
-    public function attempt(string $key = 'default'): bool
+    public function attempt(string $key): bool
     {
-        $windowKey = $this->getWindowKey($key);
-        $burstKey = $this->getBurstKey($key);
+        $cacheKey = $this->getCacheKey($key);
+        $attempts = Cache::get($cacheKey, 0);
 
-        // Check burst limit first
-        if (!$this->checkBurstLimit($burstKey)) {
+        if ($attempts >= $this->requestsPerSecond) {
             return false;
         }
 
-        // Check requests per second limit
-        if (!$this->checkPerSecondLimit($windowKey)) {
-            return false;
-        }
-
-        // Record the request
-        $this->recordRequest($windowKey, $burstKey);
+        // Increment attempts using simple increment with TTL
+        Cache::put($cacheKey, $attempts + 1, now()->addSeconds(1));
 
         return true;
     }
 
-    /**
-     * Wait for the next available slot if rate limited.
-     */
-    public function waitIfNeeded(string $key = 'default'): void
+    public function retryAfter(string $key): int
     {
-        $attempts = 0;
-        $maxAttempts = 10;
+        $cacheKey = $this->getCacheKey($key);
+        $attempts = Cache::get($cacheKey, 0);
 
-        while (!$this->attempt($key) && $attempts < $maxAttempts) {
-            $sleepTime = $this->calculateSleepTime();
-            usleep($sleepTime * 1000); // Convert to microseconds
-            $attempts++;
+        if ($attempts < $this->requestsPerSecond) {
+            return 0;
         }
 
-        if ($attempts >= $maxAttempts) {
-            throw SemanticScholarException::rateLimitExceeded();
-        }
-    }
-
-    /**
-     * Get time to wait before next request.
-     */
-    public function getRetryAfter(string $key = 'default'): int
-    {
-        $windowKey = $this->getWindowKey($key);
-        $burstKey = $this->getBurstKey($key);
-
-        $windowCount = Cache::get($windowKey, 0);
-        $burstCount = Cache::get($burstKey, 0);
-
-        if ($burstCount >= $this->burstLimit) {
-            return 60; // Wait 1 minute if burst limit exceeded
-        }
-
-        if ($windowCount >= $this->requestsPerSecond) {
-            return 1; // Wait 1 second if per-second limit exceeded
-        }
-
-        return 0;
-    }
-
-    /**
-     * Clear rate limit for a key.
-     */
-    public function clear(string $key = 'default'): void
-    {
-        Cache::forget($this->getWindowKey($key));
-        Cache::forget($this->getBurstKey($key));
-    }
-
-    /**
-     * Get current usage stats.
-     */
-    public function getStats(string $key = 'default'): array
-    {
-        $windowKey = $this->getWindowKey($key);
-        $burstKey = $this->getBurstKey($key);
-
-        return [
-            'current_window_requests' => Cache::get($windowKey, 0),
-            'current_burst_requests' => Cache::get($burstKey, 0),
-            'requests_per_second_limit' => $this->requestsPerSecond,
-            'burst_limit' => $this->burstLimit,
-            'retry_after' => $this->getRetryAfter($key),
-        ];
-    }
-
-    /**
-     * Check burst limit (requests per minute).
-     */
-    private function checkBurstLimit(string $burstKey): bool
-    {
-        $burstCount = Cache::get($burstKey, 0);
-
-        return $burstCount < $this->burstLimit;
-    }
-
-    /**
-     * Check per-second limit.
-     */
-    private function checkPerSecondLimit(string $windowKey): bool
-    {
-        $windowCount = Cache::get($windowKey, 0);
-
-        return $windowCount < $this->requestsPerSecond;
-    }
-
-    /**
-     * Record a request in both windows.
-     */
-    private function recordRequest(string $windowKey, string $burstKey): void
-    {
-        // Increment per-second counter
-        Cache::increment($windowKey);
-        Cache::expire($windowKey, 1); // Expire after 1 second
-
-        // Increment burst counter
-        Cache::increment($burstKey);
-        Cache::expire($burstKey, 60); // Expire after 1 minute
-    }
-
-    /**
-     * Calculate sleep time based on current load.
-     */
-    private function calculateSleepTime(): int
-    {
-        // Base sleep time in milliseconds
-        $baseSleep = 1000 / $this->requestsPerSecond;
-
-        // Add jitter to prevent thundering herd
-        $jitter = rand(0, 100);
-
-        return (int) ($baseSleep + $jitter);
-    }
-
-    /**
-     * Get cache key for per-second window.
-     */
-    private function getWindowKey(string $key): string
-    {
-        $timestamp = time();
-
-        return "{$this->cachePrefix}:window:{$key}:{$timestamp}";
-    }
-
-    /**
-     * Get cache key for burst window.
-     */
-    private function getBurstKey(string $key): string
-    {
-        $minute = floor(time() / 60);
-
-        return "{$this->cachePrefix}:burst:{$key}:{$minute}";
+        // Return milliseconds until next second
+        return (1000 - (now()->millisecond));
     }
 
     public function remaining(string $key): int
@@ -189,6 +60,22 @@ class RateLimiter
 
     protected function getCacheKey(string $key): string
     {
-        return 'rate_limit_' . $key . '_' . now()->format('Y-m-d H:i:s');
+        // Use second-based cache keys to auto-expire
+        return 'rate_limit_' . $key . '_' . now()->format('Y-m-d_H:i:s');
+    }
+
+    public function clear(string $key): bool
+    {
+        $cacheKey = $this->getCacheKey($key);
+        return Cache::forget($cacheKey);
+    }
+
+    public function waitIfNeeded()
+    {
+        $key = 'global'; // Use a global key for simplicity
+        while (!$this->attempt($key)) {
+            $delay = $this->retryAfter($key);
+            usleep($delay * 1000); // Convert ms to µs
+        }
     }
 }

@@ -20,6 +20,21 @@ class Venue extends Data
         public ?string $abbreviation = null,
     ) {}
 
+    public static function fromArray(array $item)
+    {
+        return new self(
+            venueId: $item['venueId'] ?? null,
+            name: $item['name'] ?? null,
+            type: $item['type'] ?? null,
+            url: $item['url'] ?? null,
+            externalIds: $item['externalIds'] ?? null,
+            issn: $item['issn'] ?? null,
+            publisher: $item['publisher'] ?? null,
+            alternateNames: $item['alternateNames'] ?? null,
+            abbreviation: $item['abbreviation'] ?? null,
+        );
+    }
+
     /**
      * Get the ISSN identifier.
      */

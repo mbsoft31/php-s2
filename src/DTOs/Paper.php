@@ -2,7 +2,6 @@
 
 namespace Mbsoft\SemanticScholar\DTOs;
 
-use Spatie\LaravelData\Attributes\MapInputName;
 use Spatie\LaravelData\Data;
 use Spatie\LaravelData\Optional;
 
@@ -12,7 +11,6 @@ class Paper extends Data
         public string $paperId,
         public ?string $title = null,
         public ?int $year = null,
-        #[MapInputName('abstract')]
         public ?string $abstract = null,
         public ?int $citationCount = null,
         public ?int $influentialCitationCount = null,
@@ -25,26 +23,205 @@ class Paper extends Data
         /** @var Citation[]|Optional */
         public array|Optional $references = [],
         public ?Venue $venue = null,
-        #[MapInputName('openAccessPdf')]
         public ?array $openAccessPdf = null,
-        #[MapInputName('externalIds')]
         public ?array $externalIds = null,
         public ?string $url = null,
-        #[MapInputName('publicationTypes')]
         public ?array $publicationTypes = null,
-        #[MapInputName('publicationDate')]
         public ?string $publicationDate = null,
-        #[MapInputName('fieldsOfStudy')]
         public ?array $fieldsOfStudy = null,
         public ?array $s2FieldsOfStudy = null,
         public ?array $publicationVenue = null,
         public ?string $journal = null,
-        #[MapInputName('isOpenAccess')]
         public ?bool $isOpenAccess = null,
         public ?array $tldr = null,
         /** @var array|Optional Embedding vector if requested */
         public array|Optional $embedding = [],
     ) {}
+
+    public function getPaperId(): string
+    {
+        return $this->paperId;
+    }
+
+    public function getTitle(): ?string
+    {
+        return $this->title;
+    }
+
+    public function getYear(): ?int
+    {
+        return $this->year;
+    }
+
+    public function getAbstract(): ?string
+    {
+        return $this->abstract;
+    }
+
+    public function getCitationCount(): ?int
+    {
+        return $this->citationCount;
+    }
+
+    public function getInfluentialCitationCount(): ?int
+    {
+        return $this->influentialCitationCount;
+    }
+
+    public function getReferenceCount(): ?int
+    {
+        return $this->referenceCount;
+    }
+
+    public function getCorpusId(): ?string
+    {
+        return $this->corpusId;
+    }
+
+    public function getCitations(): array|Optional
+    {
+        return $this->citations;
+    }
+
+    public function getReferences(): array|Optional
+    {
+        return $this->references;
+    }
+
+    public function getOpenAccessPdf(): ?array
+    {
+        return $this->openAccessPdf;
+    }
+
+    public function getExternalIds(): ?array
+    {
+        return $this->externalIds;
+    }
+
+    public function getUrl(): ?string
+    {
+        return $this->url;
+    }
+
+    public function getPublicationTypes(): ?array
+    {
+        return $this->publicationTypes;
+    }
+
+    public function getPublicationDate(): ?string
+    {
+        return $this->publicationDate;
+    }
+
+    public function getS2FieldsOfStudy(): ?array
+    {
+        return $this->s2FieldsOfStudy;
+    }
+
+    public function getPublicationVenue(): ?array
+    {
+        return $this->publicationVenue;
+    }
+
+    public function getJournal(): ?string
+    {
+        return $this->journal;
+    }
+
+    public function getIsOpenAccess(): ?bool
+    {
+        return $this->isOpenAccess;
+    }
+
+    public function getEmbedding(): array|Optional
+    {
+        return $this->embedding;
+    }
+
+    public static function fromArray(array $data): self
+    {
+        // Handle nested authors
+        if (isset($data['authors']) && is_array($data['authors'])) {
+            $data['authors'] = array_map(fn ($author) => Author::from($author), $data['authors']);
+        } else {
+            $data['authors'] = Optional::create();
+        }
+
+        // Handle nested citations
+        if (isset($data['citations']) && is_array($data['citations'])) {
+            $data['citations'] = array_map(fn ($citation) => Citation::from($citation), $data['citations']);
+        } else {
+            $data['citations'] = Optional::create();
+        }
+
+        // Handle nested references
+        if (isset($data['references']) && is_array($data['references'])) {
+            $data['references'] = array_map(fn ($reference) => Citation::from($reference), $data['references']);
+        } else {
+            $data['references'] = Optional::create();
+        }
+
+        // Handle nested venue
+        if (isset($data['venue']) && is_array($data['venue'])) {
+            $data['venue'] = Venue::fromArray($data['venue']);
+        } else if (isset($data['venue']) && is_string($data['venue'])) {
+            $data['venue'] = Venue::fromArray(['name' => $data['venue']]);
+        }else {
+            $data['venue'] = null;
+        }
+
+        // Handle embedding
+        if (!isset($data['embedding']) || !is_array($data['embedding'])) {
+            $data['embedding'] = Optional::create();
+        }
+
+        $open = $data['openAccessPdf'] ?? null;
+        if ($open === null || (is_array($open) && empty($open))) {
+            $data['openAccessPdf'] = null;
+        }
+
+        foreach ($open ?? [] as $pdf) {
+            if (!empty($pdf['url'])) {
+                $hash = hash('md5', $pdf['url']);
+                if (isset($data['openAccessPdf'][$hash])) {
+                    continue;
+                }
+                $data['openAccessPdf'][$hash] = $pdf;
+                break;
+            }
+        }
+
+        return new self(...$data);
+    }
+
+    public function getAcademicAge(): ?int
+    {
+        if ($this->year === null) {
+            return null;
+        }
+
+        $currentYear = (int)date('Y');
+        return $currentYear - $this->year;
+    }
+
+    public function getAuthors(): array
+    {
+        if ($this->authors instanceof Optional) {
+            return [];
+        }
+
+        return $this->authors;
+    }
+
+    public function isOpenAccess(): bool
+    {
+        return $this->isOpenAccess === true;
+    }
+
+    public function getOpenAccessUrls(): ?array
+    {
+        return $this->openAccessPdf;
+    }
 
     /**
      * Get the DOI identifier.
@@ -332,6 +509,16 @@ class Paper extends Data
         return $bibtex;
     }
 
+    public function getAuthorNamesString(): string
+    {
+        return implode(', ', $this->getAuthorNames());
+    }
+
+    public function getVenue(): string
+    {
+        return $this->venue?->name ?? $this->publicationVenue['name'] ?? 'Unknown Venue';
+    }
+
     /**
      * Generate APA citation.
      */
@@ -399,7 +586,7 @@ class Paper extends Data
      */
     public function toArray(): array
     {
-        return array_merge(parent::toArray(), [
+        return [
             'doi' => $this->getDoi(),
             'arxiv_id' => $this->getArxivId(),
             'pubmed_id' => $this->getPubmedId(),
@@ -414,6 +601,21 @@ class Paper extends Data
             'citation_velocity' => $this->getCitationVelocity(),
             'impact_score' => $this->getImpactScore(),
             'semantic_scholar_url' => $this->getSemanticScholarUrl(),
-        ]);
+        ];
+    }
+
+    public function isRecentPublication(): bool
+    {
+        return $this->year && $this->year >= (date('Y') - 2);
+    }
+
+    public function hasTitle(): bool
+    {
+        return !empty($this->title);
+    }
+
+    public function hasAbstract(): bool
+    {
+        return !empty($this->abstract);
     }
 }

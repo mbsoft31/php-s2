@@ -1,4 +1,5 @@
 <?php
+// tests/TestCase.php - Updated with Data config
 
 namespace Mbsoft\SemanticScholar\Tests;
 
@@ -12,15 +13,32 @@ abstract class TestCase extends BaseTestCase
     {
         parent::setUp();
 
-        // Set up test configuration
+        // Set up test configuration for both packages
         config([
+            // Semantic Scholar config
             'semantic-scholar.api_key' => 'test-api-key',
             'semantic-scholar.base_url' => 'https://api.semanticscholar.org/graph/v1',
             'semantic-scholar.timeout' => 30,
             'semantic-scholar.retry_attempts' => 3,
             'semantic-scholar.cache.enabled' => false,
             'semantic-scholar.logging.enabled' => false,
-            'semantic-scholar.rate_limiting.enabled' => false,
+            'semantic-scholar.rate_limiting.enabled' => true, // Keep enabled for testing
+
+            // Spatie Laravel Data config - CRITICAL FIX
+            'data' => [
+                'validation_strategy' => 'only_requests',
+                'max_transformation_depth' => 512,
+                'max_cast_depth' => 512,
+                'rule_inferrers' => [],
+                'normalizers' => [
+                    \Spatie\LaravelData\Normalizers\ArrayNormalizer::class,
+                ],
+                'transformers' => [],
+                'casts' => [],
+                'wrap' => null,
+                'var_dumper_caster_mode' => 'disabled',
+                'throw_when_invalid_partial' => false,
+            ],
         ]);
     }
 
@@ -28,6 +46,7 @@ abstract class TestCase extends BaseTestCase
     {
         return [
             SemanticScholarServiceProvider::class,
+            \Spatie\LaravelData\LaravelDataServiceProvider::class, // Add Data provider
         ];
     }
 
@@ -40,7 +59,6 @@ abstract class TestCase extends BaseTestCase
 
     protected function tearDown(): void
     {
-        // Remove the assertNothingOutstanding call that's causing issues
         parent::tearDown();
     }
 }

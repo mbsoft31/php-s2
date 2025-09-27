@@ -2,7 +2,6 @@
 
 namespace Mbsoft\SemanticScholar\DTOs;
 
-use Spatie\LaravelData\Attributes\MapInputName;
 use Spatie\LaravelData\Data;
 use Spatie\LaravelData\Optional;
 
@@ -11,7 +10,6 @@ class Author extends Data
     public function __construct(
         public string $authorId,
         public string $name,
-        #[MapInputName('externalIds')]
         public ?array $externalIds = null,
         public ?string $url = null,
         public ?int $paperCount = null,
@@ -26,9 +24,28 @@ class Author extends Data
         /** @var array|Optional Representative papers if requested */
         public array|Optional $representativePapers = [],
         public ?array $aliases = null,
-        #[MapInputName('paperCountByYear')]
         public ?array $paperCountByYear = null,
     ) {}
+
+    public static function fromArray(array $data): static
+    {
+        return new static(
+            authorId: $data['authorId'],
+            name: $data['name'],
+            externalIds: $data['externalIds'] ?? null,
+            url: $data['url'] ?? null,
+            paperCount: $data['paperCount'] ?? null,
+            citationCount: $data['citationCount'] ?? null,
+            hIndex: $data['hIndex'] ?? null,
+            papers: isset($data['papers']) ? array_map(fn ($paper) => Paper::from($paper), $data['papers']) : Optional::create(),
+            affiliations: $data['affiliations'] ?? null,
+            homepage: $data['homepage'] ?? null,
+            recentPapers: isset($data['recentPapers']) ? array_map(fn ($paper) => Paper::from($paper), $data['recentPapers']) : Optional::create(),
+            representativePapers: isset($data['representativePapers']) ? array_map(fn ($paper) => Paper::from($paper), $data['representativePapers']) : Optional::create(),
+            aliases: $data['aliases'] ?? null,
+            paperCountByYear: $data['paperCountByYear'] ?? null,
+        );
+    }
 
     /**
      * Get the ORCID identifier.
@@ -264,6 +281,45 @@ class Author extends Data
     }
 
     /**
+     * Get career start year.
+     */
+    public function getCareerStartYear(): ?int
+    {
+        $careerSpan = $this->getCareerSpan();
+        return $careerSpan ? $careerSpan['start_year'] : null;
+    }
+
+    public function getCareerEndYear(): ?int
+    {
+        $careerSpan = $this->getCareerSpan();
+        return $careerSpan ? $careerSpan['end_year'] : null;
+    }
+
+    public function getMostCitedPapers(int $topN = 5): array
+    {
+        if ($this->papers instanceof Optional || empty($this->papers)) {
+            return [];
+        }
+
+        usort($this->papers, fn($a, $b) => ($b->citationCount ?? 0) <=> ($a->citationCount ?? 0));
+
+        return array_slice($this->papers, 0, $topN);
+    }
+
+    public function isProlific(): bool
+    {
+        return $this->getPaperCount() >= 30;
+    }
+
+    /**
+     * Get Affiliations.
+     */
+    public function getAffiliations(): array
+    {
+        return $this->affiliations;
+    }
+
+    /**
      * Get paper count by year.
      */
     public function getPaperCountByYear(): array
@@ -299,7 +355,7 @@ class Author extends Data
             return null;
         }
 
-        return array_key_first(array_slice(array_flip(array_reverse($yearCounts, true)), 0, 1, true));
+        return array_search(max($yearCounts), $yearCounts, true) ?: null;
     }
 
     /**
@@ -433,5 +489,29 @@ class Author extends Data
             'is_senior_researcher' => $this->isSeniorResearcher(),
             'is_emerging_researcher' => $this->isEmergingResearcher(),
         ]);
+    }
+
+    /**
+     * @return string
+     */
+    public function getAuthorId(): string
+    {
+        return $this->authorId;
+    }
+
+    public function getName(): string
+    {
+        return $this->name;
+    }
+
+    public function isActive()
+    {
+        $careerSpan = $this->getCareerSpan();
+        return $careerSpan ? $careerSpan['is_active'] : false;
+    }
+
+    public function getPrimaryAffiliation(): ?string
+    {
+        return $this->getCurrentAffiliation();
     }
 }
