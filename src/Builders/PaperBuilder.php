@@ -1,4 +1,5 @@
 <?php
+// src/Builders/PaperBuilder.php - New specialized builder
 
 namespace Mbsoft\SemanticScholar\Builders;
 
@@ -9,87 +10,20 @@ use Mbsoft\SemanticScholar\Exceptions\SemanticScholarException;
 
 class PaperBuilder extends Builder
 {
-    protected string $endpoint = 'paper';
+    protected string $currentEndpoint = 'paper';
 
     /**
-     * Find paper by DOI
+     * Override get() to ensure Paper DTOs
      * @throws SemanticScholarException
-     */
-    public function findByDoi(string $doi): ?Paper
-    {
-        $this->endpoint = 'paper/DOI:' . $doi;
-
-        $response = $this->makeRequest();
-
-        if (!$response) {
-            return null;
-        }
-
-        return new Paper($response);
-    }
-
-    /**
-     * Find paper by ArXiv ID
-     */
-    public function findByArxiv(string $arxivId): ?Paper
-    {
-        $this->endpoint = 'paper/ARXIV:' . $arxivId;
-
-        $response = $this->makeRequest();
-
-        if (!$response) {
-            return null;
-        }
-
-        return new Paper($response);
-    }
-
-    /**
-     * Find paper by PubMed ID
-     */
-    public function findByPubmed(string $pubmedId): ?Paper
-    {
-        $this->endpoint = 'paper/PMID:' . $pubmedId;
-
-        $response = $this->makeRequest();
-
-        if (!$response) {
-            return null;
-        }
-
-        return new Paper($response);
-    }
-
-    /**
-     * Search papers
-     */
-    public function search(string $query): self
-    {
-        $this->endpoint = 'paper/search';
-        $this->params['query'] = $query;
-
-        return $this;
-    }
-
-    /**
-     * Override get() to return Paper DTOs
      */
     public function get(): Collection
     {
-        $response = $this->makeRequest();
+        $results = parent::get();
 
-        $papers = [];
-        $data = $response['data'] ?? $response;
-
-        if (!is_array($data)) {
-            return collect([]);
-        }
-
-        foreach ($data as $paperData) {
-            $papers[] = new Paper($paperData);
-        }
-
-        return collect($papers);
+        // Ensure all items are Paper DTOs
+        return $results->map(function ($item) {
+            return $item instanceof Paper ? $item : Paper::from((array) $item);
+        });
     }
 
     /**
@@ -97,36 +31,46 @@ class PaperBuilder extends Builder
      */
     public function first(): ?Paper
     {
-        $this->limit(1);
-        $papers = $this->get();
-
-        return $papers->first();
+        $paper = parent::first();
+        return $paper instanceof Paper ? $paper : ($paper ? Paper::from((array) $paper) : null);
     }
 
     /**
-     * Semantic Scholar specific filters
+     * Find paper by DOI with Paper DTO guarantee
+     * @throws SemanticScholarException
      */
-    public function byYear(int $year): self
+    public function findByDoi(string $doi): ?Paper
     {
-        $this->params['year'] = $year;
-        return $this;
+        $paper = parent::findByDoi($doi);
+        return $paper instanceof Paper ? $paper : null;
     }
 
-    public function minCitations(int $count): self
+    /**
+     * Find paper by ArXiv ID with Paper DTO guarantee
+     * @throws SemanticScholarException
+     */
+    public function findByArxiv(string $arxivId): ?Paper
     {
-        $this->params['minCitationCount'] = $count;
-        return $this;
+        $paper = parent::findByArxiv($arxivId);
+        return $paper instanceof Paper ? $paper : null;
     }
 
-    public function openAccess(bool $openAccess = true): self
+    /**
+     * Find paper by PubMed ID with Paper DTO guarantee
+     * @throws SemanticScholarException
+     */
+    public function findByPubmed(string $pubmedId): ?Paper
     {
-        $this->params['openAccessPdf'] = $openAccess ? 'true' : 'false';
-        return $this;
+        $paper = parent::findByPubmed($pubmedId);
+        return $paper instanceof Paper ? $paper : null;
     }
 
-    public function byFieldOfStudy(string $field): self
+    /**
+     * Search papers with automatic endpoint setting
+     */
+    public function search(string $query): self
     {
-        $this->params['fieldsOfStudy'] = $field;
-        return $this;
+        $this->currentEndpoint = 'paper/search';
+        return parent::search($query);
     }
 }

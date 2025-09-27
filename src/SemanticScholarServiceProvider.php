@@ -2,11 +2,13 @@
 
 namespace Mbsoft\SemanticScholar;
 
+use Exception;
 use Illuminate\Support\ServiceProvider;
-use Mbsoft\SemanticScholar\Http\Client;
-use Mbsoft\SemanticScholar\Builders\PaperBuilder;
+use Illuminate\Support\Facades\Route;
 use Mbsoft\SemanticScholar\Builders\AuthorBuilder;
+use Mbsoft\SemanticScholar\Builders\PaperBuilder;
 use Mbsoft\SemanticScholar\Commands\SemanticScholarCommand;
+use Mbsoft\SemanticScholar\Http\Client;
 
 class SemanticScholarServiceProvider extends ServiceProvider
 {
@@ -25,22 +27,31 @@ class SemanticScholarServiceProvider extends ServiceProvider
             return new SemanticScholar($app->make(Client::class));
         });
 
-        // Register specialized builders
-        $this->app->bind(PaperBuilder::class, function ($app) {
-            return new PaperBuilder($app->make(Client::class));
+        // Register Builder with Client dependency injection
+        $this->app->bind(Builder::class, function ($app) {
+            return new Builder($app->make(Client::class));
         });
 
-        $this->app->bind(AuthorBuilder::class, function ($app) {
-            return new AuthorBuilder($app->make(Client::class));
-        });
+        // Register specialized builders if they exist
+        if (class_exists(PaperBuilder::class)) {
+            $this->app->bind(PaperBuilder::class, function ($app) {
+                return new PaperBuilder($app->make(Client::class));
+            });
+        }
+
+        if (class_exists(AuthorBuilder::class)) {
+            $this->app->bind(AuthorBuilder::class, function ($app) {
+                return new AuthorBuilder($app->make(Client::class));
+            });
+        }
 
         // Register builder factory methods
         $this->app->bind('semantic-scholar.papers', function ($app) {
-            return $app->make(PaperBuilder::class);
+            return $app->make(Builder::class)->endpoint('paper');
         });
 
         $this->app->bind('semantic-scholar.authors', function ($app) {
-            return $app->make(AuthorBuilder::class);
+            return $app->make(Builder::class)->endpoint('author');
         });
     }
 
@@ -58,16 +69,74 @@ class SemanticScholarServiceProvider extends ServiceProvider
             ]);
         }
 
-        // Register health check route in development
+        // Register health check routes in development
         if ($this->app->environment(['local', 'testing'])) {
-            $this->registerHealthRoute();
+            $this->registerHealthRoutes();
         }
+
+        // Register cache tags for cache management
+        $this->registerCacheTags();
     }
 
-    protected function registerHealthRoute(): void
+    /**
+     * Register health check routes
+     */
+    protected function registerHealthRoutes(): void
     {
-        if (!$this->app->routesAreCached()) {
-            require __DIR__.'/../routes/health.php';
-        }
+        Route::prefix('semantic-scholar')
+            ->name('semantic-scholar.')
+            ->group(function () {
+                Route::get('health', function () {
+                    try {
+                        $isHealthy = app('semantic-scholar')->test();
+
+                        return response()->json([
+                            'status' => $isHealthy ? 'healthy' : 'unhealthy',
+                            'service' => 'semantic-scholar',
+                            'timestamp' => now(),
+                            'api_key_configured' => !empty(config('semantic-scholar.api_key')),
+                            'rate_limit' => config('semantic-scholar.api_key') ? '100 req/sec' : '1 req/sec',
+                        ], $isHealthy ? 200 : 500);
+
+                    } catch (Exception $e) {
+                        return response()->json([
+                            'status' => 'error',
+                            'service' => 'semantic-scholar',
+                            'error' => $e->getMessage(),
+                            'timestamp' => now(),
+                        ], 500);
+                    }
+                })->name('health');
+
+                Route::get('status', function () {
+                    $config = config('semantic-scholar');
+
+                    return response()->json([
+                        'service' => 'semantic-scholar',
+                        'version' => '1.0.0',
+                        'api_key_configured' => !empty($config['api_key']),
+                        'base_url' => $config['base_url'],
+                        'rate_limit' => $config['api_key'] ?
+                            $config['rate_limiting']['with_api_key_rps'] . ' req/sec' :
+                            $config['rate_limiting']['requests_per_second'] . ' req/sec',
+                        'cache_enabled' => $config['cache']['enabled'],
+                        'cache_driver' => $config['cache']['driver'],
+                        'retry_attempts' => $config['retry_attempts'],
+                        'timeout' => $config['timeout'],
+                    ]);
+                })->name('status');
+            });
+    }
+
+    /**
+     * Register cache tags for organized cache management
+     */
+    protected function registerCacheTags(): void
+    {
+        $this->app->booted(function () {
+            if (config('semantic-scholar.cache.tags')) {
+                cache()->tags(['semantic-scholar']);
+            }
+        });
     }
 }

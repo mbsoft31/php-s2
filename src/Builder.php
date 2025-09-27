@@ -2,49 +2,23 @@
 
 namespace Mbsoft\SemanticScholar;
 
-use BadMethodCallException;
-use DateInterval;
-use Exception;
-use Illuminate\Pagination\LengthAwarePaginator;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Cache as CacheFacade;
-use Illuminate\Support\LazyCollection;
-use Illuminate\Support\Str;
-use Mbsoft\SemanticScholar\DTOs\Author;
+use Mbsoft\SemanticScholar\Http\Client;
 use Mbsoft\SemanticScholar\DTOs\Paper;
+use Mbsoft\SemanticScholar\DTOs\Author;
 use Mbsoft\SemanticScholar\DTOs\Venue;
 use Mbsoft\SemanticScholar\Exceptions\SemanticScholarException;
-use Mbsoft\SemanticScholar\Http\Client;
+use Illuminate\Support\Collection;
+use Illuminate\Support\LazyCollection;
 
 class Builder
 {
-    private array $filters = [];
-
-    private ?string $searchQuery = null;
-
-    private array $fields = [];
-
-    private int $limit = 100;
-
-    private int $offset = 0;
-
-    private ?string $token = null; // For pagination
-
-    private ?string $apiKey = null;
-
-    private DateInterval|Carbon|int|null $cacheTtl = null;
-
-    private bool $cacheForever = false;
-
     protected Client $client;
     protected array $params = [];
     protected array $headers = [];
-    protected ?string $endpoint = null;
+    protected string $currentEndpoint = '';
     protected ?int $cacheFor = null;
     protected int $retryAttempts = 3;
     protected int $timeout = 30;
-
 
     public function __construct(Client $client)
     {
@@ -54,54 +28,282 @@ class Builder
     }
 
     /**
-     * Search for entities by text query.
+     * Set the API endpoint
+     */
+    public function endpoint(string $endpoint): self
+    {
+        $this->currentEndpoint = $endpoint;
+        return $this;
+    }
+
+    /**
+     * Search for papers or authors
      */
     public function search(string $query): self
     {
-        $this->searchQuery = $query;
+        $this->params['query'] = $query;
+
+        if (empty($this->currentEndpoint)) {
+            $this->currentEndpoint = 'paper/search';
+        } elseif (!str_contains($this->currentEndpoint, 'search')) {
+            $this->currentEndpoint .= '/search';
+        }
 
         return $this;
     }
 
     /**
-     * Select specific fields to return.
+     * Set the fields to return
      */
-    public function fields(array|string $fields): self
+    public function fields(string $fields): self
     {
-        $this->fields = is_array($fields) ? $fields : func_get_args();
-
+        $this->params['fields'] = $fields;
         return $this;
     }
 
     /**
-     * Limit the number of results.
+     * Set the limit
      */
     public function limit(int $limit): self
     {
-        $this->limit = min($limit, 1000); // API limit
-
+        $this->params['limit'] = $limit;
         return $this;
     }
 
     /**
-     * Set the offset for pagination.
+     * Set the offset
      */
     public function offset(int $offset): self
     {
-        $this->offset = $offset;
-
+        $this->params['offset'] = $offset;
         return $this;
+    }
+
+    /**
+     * Filter by year
+     */
+    public function byYear(int $year): self
+    {
+        $this->params['year'] = $year;
+        return $this;
+    }
+
+    /**
+     * Filter by minimum citations
+     */
+    public function minCitations(int $count): self
+    {
+        $this->params['minCitationCount'] = $count;
+        return $this;
+    }
+
+    /**
+     * Filter by maximum citations
+     */
+    public function maxCitations(int $count): self
+    {
+        $this->params['maxCitationCount'] = $count;
+        return $this;
+    }
+
+    /**
+     * Filter by open access
+     */
+    public function openAccess(bool $openAccess = true): self
+    {
+        $this->params['openAccessPdf'] = $openAccess ? 'true' : 'false';
+        return $this;
+    }
+
+    /**
+     * Filter by field of study
+     */
+    public function byFieldOfStudy(string $field): self
+    {
+        $this->params['fieldsOfStudy'] = $field;
+        return $this;
+    }
+
+    /**
+     * Filter by publication type
+     */
+    public function publicationType(string $type): self
+    {
+        $this->params['publicationType'] = $type;
+        return $this;
+    }
+
+    /**
+     * Filter by venue
+     */
+    public function byVenue(string $venue): self
+    {
+        $this->params['venue'] = $venue;
+        return $this;
+    }
+
+    /**
+     * Only influential citations
+     */
+    public function influentialCitations(bool $only = true): self
+    {
+        $this->params['influentialCitations'] = $only ? 'true' : 'false';
+        return $this;
+    }
+
+    /**
+     * Cache the results
+     */
+    public function cache(int $ttl = null): self
+    {
+        $this->cacheFor = $ttl ?? config('semantic-scholar.cache.default_ttl', 3600);
+        return $this;
+    }
+
+    /**
+     * Set retry attempts
+     */
+    public function retry(int $attempts): self
+    {
+        $this->retryAttempts = $attempts;
+        return $this;
+    }
+
+    /**
+     * Set timeout
+     */
+    public function timeout(int $seconds): self
+    {
+        $this->timeout = $seconds;
+        return $this;
+    }
+
+    /**
+     * Find by specific ID
+     */
+    public function find(string $id): ?object
+    {
+        $endpoint = rtrim($this->currentEndpoint, '/search') . '/' . $id;
+
+        try {
+            $response = $this->client
+                ->timeout($this->timeout)
+                ->retry($this->retryAttempts)
+                ->get($endpoint, [], $this->headers);
+
+            if (!$response || empty($response)) {
+                return null;
+            }
+
+            return $this->mapToDTO($response);
+
+        } catch (\Exception $e) {
+            if (str_contains($e->getMessage(), '404')) {
+                return null;
+            }
+            throw SemanticScholarException::networkError($e->getMessage());
+        }
+    }
+
+    /**
+     * Find paper by DOI
+     */
+    public function findByDoi(string $doi): ?object
+    {
+        $endpoint = 'paper/DOI:' . $doi;
+
+        try {
+            $response = $this->client
+                ->timeout($this->timeout)
+                ->retry($this->retryAttempts)
+                ->get($endpoint, $this->buildParams(), $this->headers);
+
+            return $response ? new Paper($response) : null;
+
+        } catch (\Exception $e) {
+            if (str_contains($e->getMessage(), '404')) {
+                return null;
+            }
+            throw SemanticScholarException::networkError($e->getMessage());
+        }
+    }
+
+    /**
+     * Find paper by ArXiv ID
+     */
+    public function findByArxiv(string $arxivId): ?object
+    {
+        $endpoint = 'paper/ARXIV:' . $arxivId;
+
+        try {
+            $response = $this->client
+                ->timeout($this->timeout)
+                ->retry($this->retryAttempts)
+                ->get($endpoint, $this->buildParams(), $this->headers);
+
+            return $response ? new Paper($response) : null;
+
+        } catch (\Exception $e) {
+            if (str_contains($e->getMessage(), '404')) {
+                return null;
+            }
+            throw SemanticScholarException::networkError($e->getMessage());
+        }
+    }
+
+    /**
+     * Find paper by PubMed ID
+     */
+    public function findByPubmed(string $pubmedId): ?object
+    {
+        $endpoint = 'paper/PMID:' . $pubmedId;
+
+        try {
+            $response = $this->client
+                ->timeout($this->timeout)
+                ->retry($this->retryAttempts)
+                ->get($endpoint, $this->buildParams(), $this->headers);
+
+            return $response ? new Paper($response) : null;
+
+        } catch (\Exception $e) {
+            if (str_contains($e->getMessage(), '404')) {
+                return null;
+            }
+            throw SemanticScholarException::networkError($e->getMessage());
+        }
+    }
+
+    /**
+     * Find author by ORCID
+     */
+    public function findByOrcid(string $orcid): ?object
+    {
+        $endpoint = 'author/ORCID:' . $orcid;
+
+        try {
+            $response = $this->client
+                ->timeout($this->timeout)
+                ->retry($this->retryAttempts)
+                ->get($endpoint, $this->buildParams(), $this->headers);
+
+            return $response ? new Author($response) : null;
+
+        } catch (\Exception $e) {
+            if (str_contains($e->getMessage(), '404')) {
+                return null;
+            }
+            throw SemanticScholarException::networkError($e->getMessage());
+        }
     }
 
     /**
      * Execute the query and get results
-     * @throws SemanticScholarException
      */
     public function get(): Collection
     {
         try {
             $response = $this->makeRequest();
-
             return $this->parseResponse($response);
 
         } catch (\Exception $e) {
@@ -111,7 +313,6 @@ class Builder
 
     /**
      * Get first result
-     * @throws SemanticScholarException
      */
     public function first(): ?object
     {
@@ -122,43 +323,71 @@ class Builder
     }
 
     /**
-     * Find by specific ID (Paper, Author, etc.)
-     * @throws Exception
+     * Get results as cursor (memory efficient)
      */
-    public function find(string $id): ?object
+    public function cursor(): LazyCollection
     {
-        $this->endpoint = $this->endpoint . '/' . $id;
+        return LazyCollection::make(function () {
+            $offset = $this->params['offset'] ?? 0;
+            $limit = $this->params['limit'] ?? 100;
 
-        try {
-            $response = $this->makeRequest();
+            do {
+                $this->params['offset'] = $offset;
+                $this->params['limit'] = $limit;
 
-            if (empty($response)) {
-                return null;
+                $response = $this->makeRequest();
+                $items = $this->parseResponse($response);
+
+                foreach ($items as $item) {
+                    yield $item;
+                }
+
+                $offset += $limit;
+                $hasMore = $items->count() === $limit;
+
+            } while ($hasMore);
+        });
+    }
+
+    /**
+     * Process results in chunks
+     */
+    public function chunk(int $size, callable $callback): void
+    {
+        $this->cursor()->chunk($size)->each($callback);
+    }
+
+    /**
+     * Batch process multiple IDs
+     */
+    public function batch(array $ids, int $batchSize = 100): Collection
+    {
+        $results = collect();
+
+        foreach (array_chunk($ids, $batchSize) as $batch) {
+            foreach ($batch as $id) {
+                $result = $this->find($id);
+                if ($result) {
+                    $results->push($result);
+                }
             }
-
-            return $this->mapSingleItem($response);
-
-        } catch (\Exception $e) {
-            if (str_contains($e->getMessage(), '404')) {
-                return null;
-            }
-            throw $e;
         }
+
+        return $results;
     }
 
     /**
      * Make HTTP request through production Client
-     * @throws SemanticScholarException
      */
     protected function makeRequest(): array
     {
-        $url = $this->buildUrl();
-        $params = $this->buildQueryParams();
+        $endpoint = $this->currentEndpoint;
+        $params = $this->buildParams();
 
         return $this->client
             ->timeout($this->timeout)
             ->retry($this->retryAttempts)
-            ->get($url, $params);
+            ->get($endpoint, $params, $this->headers);
     }
 
     /**
@@ -175,18 +404,20 @@ class Builder
         } elseif (isset($response['results'])) {
             // Alternative results format
             $rawItems = $response['results'];
-        } elseif (isset($response[0])) {
+        } elseif (is_array($response) && isset($response[0])) {
             // Direct array of items
             $rawItems = $response;
         } else {
             // Single item
-            return collect([$this->mapSingleItem($response)]);
+            return collect([$this->mapToDTO($response)]);
         }
 
         foreach ($rawItems as $item) {
-            $mappedItem = $this->mapSingleItem($item);
-            if ($mappedItem) {
-                $items[] = $mappedItem;
+            if (is_array($item)) {
+                $mappedItem = $this->mapToDTO($item);
+                if ($mappedItem) {
+                    $items[] = $mappedItem;
+                }
             }
         }
 
@@ -196,15 +427,15 @@ class Builder
     /**
      * Map single API response item to appropriate DTO
      */
-    protected function mapSingleItem(array $item): ?object
+    protected function mapToDTO(array $item): ?object
     {
         // Determine entity type and map to appropriate DTO
         if ($this->isPaperResponse($item)) {
-            return Paper::from($item);
+            return new Paper($item);
         } elseif ($this->isAuthorResponse($item)) {
-            return Author::from($item);
+            return new Author($item);
         } elseif ($this->isVenueResponse($item)) {
-            return Venue::from($item);
+            return new Venue($item);
         }
 
         // Fallback for unknown response types
@@ -218,7 +449,7 @@ class Builder
     {
         return isset($item['paperId']) ||
             isset($item['title']) ||
-            str_contains($this->endpoint, 'paper');
+            str_contains($this->currentEndpoint, 'paper');
     }
 
     /**
@@ -228,7 +459,7 @@ class Builder
     {
         return isset($item['authorId']) ||
             (isset($item['name']) && !isset($item['paperId'])) ||
-            str_contains($this->endpoint, 'author');
+            str_contains($this->currentEndpoint, 'author');
     }
 
     /**
@@ -237,332 +468,48 @@ class Builder
     protected function isVenueResponse(array $item): bool
     {
         return isset($item['venueId']) ||
-            str_contains($this->endpoint, 'venue');
+            str_contains($this->currentEndpoint, 'venue');
     }
 
     /**
-     * Build the API URL for the request.
+     * Build query parameters
      */
-    private function buildUrl(?string $id = null): string
+    protected function buildParams(): array
     {
-        $baseUrl = config('semantic-scholar.base_url', 'https://api.semanticscholar.org/graph/v1');
+        $params = $this->params;
 
-        if (!is_null($id)) {
-            return "$baseUrl/$this->endpoint/$id";
+        // Set default fields if not specified
+        if (!isset($params['fields'])) {
+            $params['fields'] = $this->getDefaultFields();
         }
 
-        // Handle different endpoint patterns
-        return match ($this->endpoint) {
-            'papers' => $this->searchQuery ? " $baseUrl/paper/search" : "$baseUrl/paper/batch",
-            'authors' => "$baseUrl/author/batch",
-            'venues' => "$baseUrl/venue/batch",
-            'recommendations' => "$baseUrl/recommendations/v1/papers",
-            default => "$baseUrl/$this->endpoint",
-        };
+        return array_filter($params, fn($value) => $value !== null && $value !== '');
     }
 
     /**
-     * Build query parameters for the request.
+     * Get default fields based on endpoint
      */
-    private function buildQueryParams(): array
+    protected function getDefaultFields(): string
     {
-        $params = [];
-
-        if ($this->searchQuery) {
-            $params['query'] = $this->searchQuery;
+        if (str_contains($this->currentEndpoint, 'paper')) {
+            return config('semantic-scholar.defaults.fields.paper',
+                'paperId,title,abstract,authors,year,citationCount,influentialCitationCount,fieldsOfStudy,publicationDate,venue,openAccessPdf,tldr'
+            );
+        } elseif (str_contains($this->currentEndpoint, 'author')) {
+            return config('semantic-scholar.defaults.fields.author',
+                'authorId,name,affiliations,paperCount,citationCount,hIndex'
+            );
         }
 
-        if (!empty($this->fields)) {
-            $params['fields'] = implode(',', $this->fields);
-        } elseif ($defaultFields = config("semantic-scholar.default_fields.$this->entity")) {
-            $params['fields'] = implode(',', $defaultFields);
-        }
-
-        if ($this->limit) {
-            $params['limit'] = $this->limit;
-        }
-
-        if ($this->offset) {
-            $params['offset'] = $this->offset;
-        }
-
-        if ($this->token) {
-            $params['token'] = $this->token;
-        }
-
-        // Add filters
-        foreach ($this->filters as $key => $value) {
-            $params[$key] = $value;
-        }
-
-        return array_filter($params);
+        return '';
     }
 
     /**
-     * Generate a cache key for the request.
+     * Build complete URL
      */
-    private function getCacheKey(string $url, array $params = []): string
+    protected function buildUrl(): string
     {
-        $key = $url . '?' . http_build_query($params);
-
-        return config('semantic-scholar.cache.prefix', 'semantic_scholar') . '_' . md5($key);
+        $baseUrl = config('semantic-scholar.base_url');
+        return rtrim($baseUrl, '/') . '/' . ltrim($this->currentEndpoint, '/');
     }
-
-    /**
-     * Execute a callback with caching if enabled.
-     */
-    private function executeCacheable(string $cacheKey, callable $callback): mixed
-    {
-        if ($this->cacheTtl === null && !$this->cacheForever) {
-            return $callback();
-        }
-
-        $cache = $this->cache();
-
-        if ($this->cacheForever) {
-            return $cache->rememberForever($cacheKey, $callback);
-        }
-
-        return $cache->remember($cacheKey, $this->cacheTtl, $callback);
-    }
-
-    /**
-     * Get the cache repository instance.
-     */
-    protected function cache(): \Illuminate\Contracts\Cache\Repository
-    {
-        $store = config('semantic-scholar.cache.store', 'default');
-
-        return CacheFacade::store($store === 'default' ? null : $store);
-    }
-
-
-    /**
-     * Map API response data to DTO.
-     */
-    private function mapToDto(array $data): object
-    {
-        $dtoClass = 'Mbsoft\\SemanticScholar\\DTOs\\' . ucfirst(rtrim($this->entity, 's'));
-
-        if (class_exists($dtoClass)) {
-            return $dtoClass::from($data);
-        }
-
-        return (object)$data;
-    }
-
-    // Semantic Scholar specific methods
-
-    /**
-     * Get paginated results.
-     * @throws SemanticScholarException
-     */
-    public function paginate(int $perPage = 25, int $page = 1): LengthAwarePaginator
-    {
-        $offset = ($page - 1) * $perPage;
-        $params = array_merge($this->buildQueryParams(), [
-            'limit' => $perPage,
-            'offset' => $offset,
-        ]);
-
-        $url = $this->buildUrl();
-        $response = $this->makeRequest();
-
-        $items = collect($response['data'] ?? [])->map(fn($item) => $this->mapToDto($item));
-        $total = $response['total'] ?? 0;
-
-        return new LengthAwarePaginator(
-            $items,
-            $total,
-            $perPage,
-            $page,
-            ['path' => request()->url()]
-        );
-    }
-
-    /**
-     * Get a memory-efficient cursor for large datasets.
-     */
-    public function cursor(): LazyCollection
-    {
-        return new LazyCollection(function () {
-            $currentOffset = $this->offset;
-            $currentToken = $this->token;
-            $limit = min($this->limit, 1000);
-
-            do {
-                $params = $this->buildQueryParams();
-                $params['limit'] = $limit;
-
-                if ($currentToken) {
-                    $params['token'] = $currentToken;
-                } else {
-                    $params['offset'] = $currentOffset;
-                }
-
-                $response = $this->makeRequest();
-                $results = $response['data'] ?? [];
-
-                foreach ($results as $result) {
-                    yield $this->mapToDto($result);
-                }
-
-                // Handle pagination - Semantic Scholar uses 'next' token
-                $currentToken = $response['next'] ?? null;
-                $currentOffset += $limit;
-            } while (!empty($results) && ($currentToken || count($results) === $limit));
-        });
-    }
-
-    /**
-     * Filter papers by publication year.
-     */
-    public function byYear(int $year): self
-    {
-        return $this->where('year', (string)$year);
-    }
-
-    /**
-     * Add a filter condition.
-     */
-    public function where(string $field, string $value): self
-    {
-        $this->filters[$field] = $value;
-
-        return $this;
-    }
-
-    /**
-     * Filter papers by minimum citation count.
-     */
-    public function minCitations(int $count): self
-    {
-        return $this->where('minCitationCount', (string)$count);
-    }
-
-    /**
-     * Filter for open access papers only.
-     */
-    public function openAccess(bool $openAccess = true): self
-    {
-        return $this->where('openAccessPdf', $openAccess ? 'true' : 'false');
-    }
-
-    /**
-     * Filter papers by field of study.
-     */
-    public function byFieldOfStudy(string $field): self
-    {
-        return $this->where('fieldsOfStudy', $field);
-    }
-
-    /**
-     * Find a paper by DOI.
-     * @throws Exception
-     */
-    public function findByDoi(string $doi): ?object
-    {
-        if ($this->endpoint !== 'papers') {
-            throw new SemanticScholarException('DOI lookup is only available for papers');
-        }
-
-        // Ensure DOI has proper format
-        $doi = str_starts_with($doi, 'DOI:') ? $doi : "DOI:{$doi}";
-
-        return $this->find($doi);
-    }
-
-    /**
-     * Find a paper by ArXiv ID.
-     * @throws SemanticScholarException
-     * @throws Exception
-     */
-    public function findByArxiv(string $arxivId): ?object
-    {
-        if ($this->endpoint !== 'papers') {
-            throw new SemanticScholarException('ArXiv lookup is only available for papers');
-        }
-
-        $arxivId = str_starts_with($arxivId, 'ARXIV:') ? $arxivId : "ARXIV:{$arxivId}";
-
-        return $this->find($arxivId);
-    }
-
-    /**
-     * Find a paper by PubMed ID.
-     * @throws Exception
-     */
-    public function findByPubmed(string $pubmedId): ?object
-    {
-        if ($this->entity !== 'papers') {
-            throw new SemanticScholarException('PubMed lookup is only available for papers');
-        }
-
-        $pubmedId = str_starts_with($pubmedId, 'PMID:') ? $pubmedId : "PMID:$pubmedId";
-
-        return $this->find($pubmedId);
-    }
-
-    /**
-     * Find an author by ORCID.
-     * @throws Exception
-     */
-    public function findByOrcid(string $orcid): ?object
-    {
-        if ($this->endpoint !== 'authors') {
-            throw new SemanticScholarException('ORCID lookup is only available for authors');
-        }
-
-        $orcid = str_starts_with($orcid, 'ORCID:') ? $orcid : "ORCID:$orcid";
-
-        return $this->find($orcid);
-    }
-
-    /**
-     * Dump query information for debugging.
-     */
-    public function dump(): array
-    {
-        return [
-            'entity' => $this->endpoint,
-            'url' => $this->toUrl(),
-            'params' => $this->buildQueryParams(),
-            'filters' => $this->filters,
-            'search_query' => $this->searchQuery,
-            'fields' => $this->fields,
-            'limit' => $this->limit,
-            'offset' => $this->offset,
-        ];
-    }
-
-    /**
-     * Get the URL for this query (for debugging).
-     */
-    public function toUrl(): string
-    {
-        $url = $this->buildUrl();
-        $params = $this->buildQueryParams();
-
-        if (empty($params)) {
-            return $url;
-        }
-
-        return $url . '?' . http_build_query($params);
-    }
-
-    /**
-     * Handle dynamic "where" methods.
-     */
-    public function __call(string $name, array $arguments): self
-    {
-        if (str_starts_with($name, 'where')) {
-            $filterKey = Str::snake(substr($name, 5));
-            $value = $arguments[0];
-
-            return $this->where($filterKey, $value);
-        }
-
-        throw new BadMethodCallException("Method $name does not exist.");
-    }
-
 }

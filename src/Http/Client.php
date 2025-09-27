@@ -11,14 +11,24 @@ use Mbsoft\SemanticScholar\Exceptions\SemanticScholarException;
 
 class Client
 {
-    private RateLimiter $rateLimiter;
+    protected array $config;
+    protected RateLimiter $rateLimiter;
+    protected int $timeout;
+    protected int $retryAttempts;
+    protected int $retryDelay;
 
-    private array $config;
-
-    public function __construct(RateLimiter $rateLimiter = null)
+    public function __construct(array $config)  // FIXED: Accept array config, not RateLimiter
     {
-        $this->rateLimiter = $rateLimiter ?? new RateLimiter();
-        $this->config = config('semantic-scholar', []);
+        $this->config = $config;
+        $this->timeout = $config['timeout'] ?? 30;
+        $this->retryAttempts = $config['retry_attempts'] ?? 3;
+        $this->retryDelay = $config['retry_delay'] ?? 1000;
+
+        // Create RateLimiter internally
+        $this->rateLimiter = new RateLimiter(
+            $config['rate_limiting'] ?? [],
+            !empty($config['api_key'])
+        );
     }
 
     /**
@@ -228,5 +238,15 @@ class Client
     {
         $this->config['retry']['attempts'] = $retryAttempts;
         return $this;
+    }
+
+    public function healthCheck(): bool
+    {
+        try {
+            $response = $this->get('/paper/10.1093/mind/lix.236.433');
+            return !empty($response);
+        } catch (SemanticScholarException $e) {
+            return false;
+        }
     }
 }

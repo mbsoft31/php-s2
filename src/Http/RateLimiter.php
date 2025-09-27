@@ -178,4 +178,17 @@ class RateLimiter
 
         return "{$this->cachePrefix}:burst:{$key}:{$minute}";
     }
+
+    public function remaining(string $key): int
+    {
+        $cacheKey = $this->getCacheKey($key);
+        $attempts = Cache::get($cacheKey, 0);
+
+        return max(0, $this->requestsPerSecond - $attempts);
+    }
+
+    protected function getCacheKey(string $key): string
+    {
+        return 'rate_limit_' . $key . '_' . now()->format('Y-m-d H:i:s');
+    }
 }
