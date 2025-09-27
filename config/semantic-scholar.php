@@ -16,9 +16,9 @@ return [
 
     'cache' => [
         'enabled' => env('SEMANTIC_SCHOLAR_CACHE_ENABLED', true),
-        'driver' => env('SEMANTIC_SCHOLAR_CACHE_DRIVER', 'redis'),
+        'driver' => env('SEMANTIC_SCHOLAR_CACHE_DRIVER', config('cache.default')),
         'prefix' => env('SEMANTIC_SCHOLAR_CACHE_PREFIX', 'semantic_scholar'),
-        'tags' => env('SEMANTIC_SCHOLAR_CACHE_TAGS', true),
+        'tags' => env('SEMANTIC_SCHOLAR_CACHE_TAGS', false), // Default to false for compatibility
         'default_ttl' => env('SEMANTIC_SCHOLAR_CACHE_TTL', 3600),
         'ttl' => [
             'paper' => env('SEMANTIC_SCHOLAR_PAPER_TTL', 3600),
